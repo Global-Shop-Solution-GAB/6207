@@ -1,0 +1,295 @@
+﻿Program.Sub.Preflight.Start
+V.Global.bError.Declare(Boolean)
+V.Global.bUnattended.Declare(Boolean)
+V.Global.sRMA.Declare(String)
+Program.External.Include.Library("6004.lib")
+Program.External.Include.Library("6017.lib")
+Program.External.Include.Library("6008.lib")
+Program.External.Include.Library("500030.lib")
+Program.Sub.Preflight.End
+
+Program.Sub.Main.Start
+'RMA Cost Tracking
+'Written for TE Connectivity
+'Written by Ashley Collins
+'12/4/2020
+F.Intrinsic.Control.Try
+Function.Intrinsic.UI.UsePixels ' Allows you to use Pixels instead of Twips throughout
+
+'open connection to the db
+F.ODBC.Connection!con.OpenConnection(V.Ambient.PDSN, V.Ambient.PUser, V.Ambient.PPass)
+
+'check to see which hook is firing
+'populate hook for RMA Actions Screen
+F.Intrinsic.Control.If(V.Caller.Hook,=,34810)
+	V.Passed.000102.Set("Eval Order")
+'script 1 hook for RMA Actions screen
+F.Intrinsic.Control.ElseIf(V.Caller.Hook,=,34820)
+	'RMA number
+
+	V.Global.sRMA.Set(V.Passed.000125)
+	F.Intrinsic.Control.CallSub(SOCheck)
+F.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.Catch
+	F.Intrinsic.Control.CallSub(ErrorMessage, "ErrorNumber", V.Ambient.ErrorNumber, "ErrorDescription", V.Ambient.ErrorDescription, "Subroutine", V.Ambient.CurrentSubroutine, "UNATTENDED", V.Global.bUnattended, "Project", "6207", "ProjectTitle", "RMA Cost Tracking", "Callback", "f_Main_Unload")
+F.Intrinsic.Control.EndTry
+Program.Sub.Main.End
+
+Program.Sub.SOCheck.Start
+F.Intrinsic.Control.Try
+V.Local.iCnt.Declare(Long)
+V.Local.sCustomer.Declare(String)
+V.Local.sOrderNo.Declare(String)
+V.Local.sParameters.Declare(String)
+V.Local.sRet.Declare(String)
+V.Local.sSQL.Declare(String)
+'check CODE_SORT field on SO header for the RMA number
+
+F.Intrinsic.String.Build("SELECT ORDER_NO, CUSTOMER FROM V_ORDER_HEADER WHERE CODE_SORT LIKE '%{0}%' ", V.Global.sRMA.Trim, V.Local.sSQL)
+F.ODBC.Connection!con.ExecuteAndReturn(V.Local.sSQL, v.Local.sRet)
+'check to see if an order is returned. If it is, open the order in edit mode
+F.Intrinsic.Control.If(V.Local.sRet,<>,"")
+	F.Intrinsic.String.Split(V.Local.sRet,"*!*", v.Local.sRet)
+	V.Local.sOrderNo.Set(V.Local.sRet(0).Trim)
+	V.Local.sCustomer.Set(V.Local.sRet(1).Trim)
+	
+	F.Intrinsic.String.Build("{0}!*!O!*!{1}|~|CRYSTAL-OVERRIDE|~|", V.Local.sOrderNo.Trim, V.Local.sCustomer, v.Local.sParameters)
+	F.Global.General.CallWrapperAsync(200000,V.Local.sParameters)
+	F.Intrinsic.Control.CallSub(f_Main_Unload)
+'if no order is returned, call the subroutine to create the SO
+F.Intrinsic.Control.ElseIf(v.Local.sRet,=,"")
+	F.Intrinsic.Control.CallSub(CreateOrders)
+F.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.Catch
+	F.Intrinsic.Control.CallSub(ErrorMessage, "ErrorNumber", V.Ambient.ErrorNumber, "ErrorDescription", V.Ambient.ErrorDescription, "Subroutine", V.Ambient.CurrentSubroutine, "UNATTENDED", V.Global.bUnattended, "Project", "6207", "ProjectTitle", "RMA Cost Tracking", "Callback", "f_Main_Unload")
+F.Intrinsic.Control.EndTry
+Program.Sub.SOCheck.End
+
+Program.Sub.CreateOrders.Start
+F.Intrinsic.Control.Try
+v.Local.dDueDate.Declare(Date)
+V.Local.dOrderDate.Declare(Date)
+V.Local.iOrderNo.Declare(Long)
+V.Local.iWONo.Declare(Long)
+V.Local.iUser.Declare(Long)
+V.Local.sCustomer.Declare(String)
+V.Local.sCustPO.Declare(String)
+V.Local.sDueDate.Declare(String)
+V.Local.sFile.Declare(String)
+V.Local.sFromLoc.Declare(String)
+V.Local.sLine.Declare(String)
+V.Local.sLocation.Declare(String)
+V.Local.sNewOrderNo.Declare(String)
+V.Local.sOldOrderNo.Declare(String)
+V.Local.sOrderDate.Declare(String)
+V.Local.sRet.Declare(String)
+V.Local.sShipAddress1.Declare(String)
+V.Local.sShipAddress2.Declare(String)
+V.Local.sShipAddress3.Declare(String)
+V.Local.sShipAttn.Declare(String)
+V.Local.sShipCity.Declare(String)
+V.Local.sShipCountry.Declare(String)
+V.Local.sShipName.Declare(String)
+v.Local.sShipState.Declare(String)
+V.Local.sShipZip.Declare(String)
+V.Local.sSQL.Declare(String)
+V.Local.sTaxStatus.Declare(String)
+V.Local.sUserField1.Declare(String)
+V.Local.sNewWONum.Declare(String)
+V.Local.sNewSuff.Declare(String)
+V.Local.sRMA.Declare(String)
+
+F.Intrinsic.UI.InvokeWaitDialog("Generating Sales Order...", "RMA Evaluation Cost Tracking")
+
+'the old order numbers will be used to get the information off of the sales order header
+V.Local.sOldOrderNo.Set(V.Passed.000074)
+F.Intrinsic.String.LPad(V.Local.sOldOrderNo, "0", 7, V.Local.sOldOrderNo)
+V.Local.sLine.Set(V.Passed.000002)
+
+V.Local.dOrderDate.Set(V.Ambient.Date)
+F.Intrinsic.String.Format(V.Local.dOrderDate, "YYYYMMDD", V.Local.sOrderDate)
+
+F.Intrinsic.Date.DateAdd("D", 7, V.Local.dOrderDate, V.Local.dDueDate)
+F.Intrinsic.String.Format(V.Local.dDueDate, "YYYYMMDD", V.Local.sDueDate)
+
+F.Intrinsic.String.Build("SELECT TOP 1 CUSTOMER, DATE_ORDER, CUSTOMER_PO, NAME_CUSTOMER_SHIP, ADDRESS1_SHIP, ADDRESS2_SHIP, ADDRESS3_SHIP, CITY_SHIP, STATE_SHIP, ZIP_SHIP, COUNTRY_SHIP, ATTENTION_SHIP FROM V_ORDER_HIST_HEAD WHERE ORDER_NO = '{0}' ORDER BY INVOICE DESC", V.Local.sOldOrderNo, V.Local.sSQL)
+F.ODBC.Connection!con.ExecuteAndReturn(V.Local.sSQL, V.Local.sRet)
+F.Intrinsic.Control.If(V.Local.sRet,<>,"")
+	F.Intrinsic.String.Split(V.Local.sRet, "*!*", V.Local.sRet)
+	V.Local.sCustomer.Set(V.Local.sRet(0).Trim)
+	'v.Local.sOrderDate.Set(V.Local.sRet(1).Trim)
+	V.Local.sCustPO.Set(v.Local.sRet(2).Trim)
+	V.Local.sShipName.Set(v.Local.sRet(3).Trim)
+	V.Local.sShipAddress1.Set(V.Local.sRet(4).trim)
+	V.Local.sShipAddress2.Set(V.Local.sRet(5).Trim)
+	V.Local.sShipAddress3.Set(V.Local.sRet(6).Trim)
+	V.Local.sShipCity.Set(V.Local.sRet(7).Trim)
+	V.Local.sShipState.Set(V.Local.sRet(8).Trim)
+	V.Local.sShipZip.Set(V.Local.sRet(9).Trim)
+	V.Local.sShipCountry.Set(V.Local.sRet(10).Trim)
+	V.Local.sShipAttn.Set(V.Local.sRet(11).Trim)
+'	V.Local.sFromLoc.Set(v.Local.sRet(12).Trim)
+F.Intrinsic.Control.Else
+	F.Intrinsic.UI.Msgbox("Previous Sales Order Not Found. No information available for new Order creation.", "Error >> Sales Order Creation")
+	F.Intrinsic.UI.CloseWaitDialog
+	F.Intrinsic.Control.CallSub(f_Main_Unload)
+F.Intrinsic.Control.EndIf
+
+
+F.Intrinsic.String.Build("SELECT F_LONG FROM OP_HEADER WHERE ID = '{0}' AND SEQUENCE = '0000'", 402499, v.Local.sSQL)
+F.ODBC.Connection!con.ExecuteAndReturn(V.Local.sSQL, V.Local.iOrderNo)
+F.Intrinsic.Control.If(V.Local.iOrderNo.String,<>,"")
+	F.Intrinsic.Math.Add(V.Local.iOrderNo,1, V.Local.iOrderNo)
+	F.Intrinsic.String.LPad(v.Local.iOrderNo.String, "0", 7, V.Local.sNewOrderNo)
+F.Intrinsic.Control.EndIf
+
+'create a sales order record that is identical to the one that is tied to the RMA
+'6004 Callwrapper for Order Creation
+F.Data.DataTable.AddRow("6004Header", "Type", "O", "CustNum", V.Local.sCustomer, "OrderNum", V.Local.sNewOrderNo, "DueDate", V.Local.sDueDate, "OrdDate", V.Local.sOrderDate,"User1", "test","UserID", V.Caller.User, "PO", V.Local.sCustPO, "ShipName",V.Local.sShipName, "ShipAddr1", V.Local.sShipAddress1, "ShipAddr2", V.Local.sShipAddress2, "ShipAddr3", V.Local.sShipAddress3,"ShipCity", V.Local.sShipCity, "ShipState", v.Local.sShipState, "ShipZip", V.Local.sShipZip, "ShipCountry", V.Local.sShipCountry, "ShipAttn", V.Local.sShipAttn, "FromLocation", "KT")
+'add line for EVALUATION with Due Date of a week from the day it was created
+
+F.Data.DataTable.AddRow("6004Lines", "OrderNum", V.Local.sNewOrderNo, "LineNumber", "001", "QtyOrdered", "10000","UM", "PC", "Part", "7-120036-6", "Rev", "A", "Location", "KT", "PromiseDate", V.Local.dDueDate.formatYYYYMMDD,"LineType", "S")
+
+F.Intrinsic.Control.CallSub(6004Sync)
+
+'Check to see if the order creation worked. If it didn't, exit and throw an error.
+F.Intrinsic.String.Build("SELECT ORDER_NO FROM V_ORDER_HEADER WHERE ORDER_NO = '{0}'", V.Local.sNewOrderNo, V.Local.sSQL)
+F.ODBC.Connection!con.ExecuteAndReturn(V.Local.sSQL, v.Local.sRet)
+F.Intrinsic.Control.If(V.Local.sRet,=,"")
+	F.Intrinsic.UI.Msgbox("Order Upload Failed. Exiting", "Error - SO Creation")
+	F.Intrinsic.UI.CloseWaitDialog
+	F.Intrinsic.Control.CallSub(f_Main_Unload)
+F.Intrinsic.Control.Else
+'write the RMA to CODE_SORT field of new Order Header
+	F.Intrinsic.String.Build("UPDATE ORDER_HEADER SET CODE_SORT = '{0}' WHERE ORDER_NO = '{1}' AND RECORD_NO = '  A' AND RECORD_TYPE = 'A' ", V.Global.sRMA, V.Local.sNewOrderNo, V.Local.sSQL)
+	F.ODBC.Connection!con.Execute(V.Local.sSQL)
+	
+	F.Intrinsic.String.Build("UPDATE ORDER_HEADER SET USER_1 = '' WHERE ORDER_NO = '{0}' AND RECORD_NO = '  A' AND RECORD_TYPE = 'A' ", v.Local.sNewOrderNo, v.Local.sSQL)
+	F.ODBC.Connection!con.Execute(V.Local.sSQL)
+F.Intrinsic.Control.EndIf
+
+F.Intrinsic.UI.ChangeWaitStatus("Creating Work Order...")
+
+F.Global.General.ReadOption("401112", 3, 0,"1",V.Local.iWONo)
+V.Local.sNewWONum.Set(V.Local.iWONo.String)
+F.Intrinsic.String.LPad(V.Local.sNewWONum, "0", 6, V.Local.sNewWONum)
+V.Local.sNewSuff.Set("001")
+
+F.Intrinsic.String.Build("RMA #{0}", V.Global.sRMA, V.Local.sRMA)
+'add record to job header callwrapper
+F.Data.DataTable.AddRow("6017", "WO", V.Local.sNewWONum, "WOSuffix", V.Local.sNewSuff, "Part", "7-120036-6      A   ", "Loc", "KT","CustNum", V.Local.sCustomer, "RunQty", 1, "DateOpened", V.Ambient.Date.FormatMMDDYY, "DueDate",v.Local.dDueDate.formatMMDDYY, "AddDesc1", V.Local.sRMA, "PL", "FG")
+
+'Add to job lines
+F.Data.DataTable.AddRow("6008", "WONo", V.Local.sNewWONum, "Suffix", V.Local.sNewSuff, "SEQ", "00100", "LMO", "L", "OpDesc", "EVALUATION", "PWC", "EVALUATION", "SetupTime", 1, "Unit", "HR", "EstHrs", 0, "StartDate", V.Ambient.Date.FormatMMDDYY,"DueDate", V.Local.dDueDate.formatMMDDYY, "OrderDate", V.Local.dOrderDate.FormatMMDDYY)
+
+'add job sequence to be scheduled
+F.Data.DataTable.AddRow("500030", "WONum", V.Local.sNewWONum, "Suffix", "001", "Seq", "00100", "Schedule", "B", "StartDate", V.Ambient.Date.FormatMMDDYY,"DueDate", V.Local.dDueDate.formatMMDDYY)
+
+f.Intrinsic.Control.CallSub(6017Sync)
+f.Intrinsic.Control.CallSub(6008Sync)
+f.Intrinsic.Control.CallSub(500030Sync)
+
+
+'flag cogs
+F.Intrinsic.String.Build("UPDATE ORDER_LINES SET FLAG_COGS = 'Y' WHERE ORDER_NO = '{0}' AND RECORD_NO = '0010' AND RECORD_TYPE = 'L'", V.Local.sNewOrderNo, V.Local.sSQL)
+F.ODBC.Connection!con.Execute(V.Local.sSQL)
+
+F.Intrinsic.String.Build("UPDATE ORDER_LINES SET FLAG_COGS = 1 WHERE ORDER_NO = '{0}' AND RECORD_NO = '  A' AND RECORD_TYPE = 'A'", V.Local.sNewOrderNo, V.Local.sSQL)
+F.ODBC.Connection!con.Execute(V.Local.sSQL)
+
+F.Intrinsic.String.Build("SELECT JOB FROM ORDER_TO_WO WHERE ORDER_NO = '{0}' AND ORDER_LINE = '0010' AND PART = '7-120036-6      A   ' AND JOB = '{2}' AND SUFFIX = '{3}'", v.Local.sNewOrderNo.Trim, v.Local.sNewWONum.Trim, v.Local.sNewSuff.Trim, v.Local.sSQL)
+F.ODBC.Connection!con.ExecuteAndReturn(V.Local.sSQL, V.Local.sRet)
+F.Intrinsic.Control.If(V.Local.sRet.Trim,<>,"")
+	F.Intrinsic.String.Build("DELETE FROM ORDER_TO_WO WHERE JOB = '{0}' AND SUFFIX = '{1}' AND ORDER_NO = '{2}' AND ORDER_LINE = '0010' AND PART = '7-120036-6      A   ' AND LOCATION = 'KT'", V.Local.sNewWONum.Trim, V.Local.sNewSuff.Trim, V.Local.sNewOrderNo.Trim, V.Local.sSQL)
+	F.ODBC.Connection!con.Execute(V.Local.sSQL)
+F.Intrinsic.Control.Else
+	'create order to wo record
+	F.Intrinsic.String.Build("INSERT INTO ORDER_TO_WO (JOB, SUFFIX, ORDER_NO, ORDER_LINE, MQD_SEQ,PART, LOCATION, DESCRIPTION, DATE_ORDER_DUE, DATE_JOB_DUE, USERID) VALUES ('{0}', '{1}', '{2}', '0010','000', '7-120036-6      A   ', 'KT', '', '{3}', '{4}', '{5}')", V.Local.sNewWONum.Trim, V.Local.sNewSuff.Trim, V.Local.sNewOrderNo.Trim, V.Local.dOrderDate.formatYYYYMMDD, V.Local.dDueDate.formatYYYYMMDD, V.Caller.User ,V.Local.sSQL)
+	F.ODBC.Connection!con.Execute(V.Local.sSQL)
+F.Intrinsic.Control.EndIf
+'create COGS record
+F.Intrinsic.String.Build("INSERT INTO COST_GOODS_SOLD (ORDER_NO, ORDER_LINE, SEQUENCE, WO, SUFFIX, DESCR, BILL_DATE) VALUES ('{0}', '0010', '000', '{1}', '{2}', '', '00000000')", V.Local.sNewOrderNo.Trim, V.Local.sNewWONum.Trim, V.Local.sNewSuff.Trim, V.Local.sSQL)
+F.ODBC.Connection!con.Execute(v.Local.sSQL)
+
+F.Intrinsic.UI.CloseWaitDialog
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Catch
+	F.Intrinsic.Control.CallSub(ErrorMessage, "ErrorNumber", V.Ambient.ErrorNumber, "ErrorDescription", V.Ambient.ErrorDescription, "Subroutine", V.Ambient.CurrentSubroutine, "UNATTENDED", V.Global.bUnattended, "Project", "6207", "ProjectTitle", "RMA Cost Tracking", "Callback", "f_Main_Unload")
+F.Intrinsic.Control.EndTry
+Program.Sub.CreateOrders.End
+
+Program.Sub.f_Main_Unload.Start
+F.Intrinsic.Control.Try
+'close the connection to the database
+F.ODBC.Connection!con.Close
+
+'end the program
+F.Intrinsic.Control.End
+
+F.Intrinsic.Control.Catch
+	F.Intrinsic.Control.CallSub(ErrorMessage, "ErrorNumber", V.Ambient.ErrorNumber, "ErrorDescription", V.Ambient.ErrorDescription, "Subroutine", V.Ambient.CurrentSubroutine, "UNATTENDED", V.Global.bUnattended, "Project", "6180", "ProjectTitle", "AR Batch Packing List Export", "Callback", "f_Main_Unload")
+F.Intrinsic.Control.EndTry
+Program.Sub.f_Main_Unload.End
+
+Program.Sub.ErrorMessage.Start
+'basic error message for replacing catch block
+'this is really just for when printing the message and ending program
+'pass error number, error description, current subroutine
+'optional callback sub, this will be called before ending
+'optional unattended parameters, those subs may not exist if not using them but won't be called
+F.Intrinsic.Control.Try
+
+V.Local.iError.Declare(Long)
+V.Local.sErrorDescription.Declare(String)
+V.Local.sSubroutine.Declare(String)
+V.Local.sError.Declare(String)
+V.Local.bExists.Declare(Boolean)
+V.Local.sCallback.Declare(String)
+
+V.Local.iError.Set(V.Args.ErrorNumber)
+V.Local.sErrorDescription.Set(V.Args.ErrorDescription)
+V.Local.sSubroutine.Set(V.Args.Subroutine)
+
+'make sure we aren't in an error loop
+F.Intrinsic.Control.If(V.Global.bError)
+	F.Intrinsic.Control.End
+
+F.Intrinsic.Control.EndIf
+V.Global.bError.Set(True)
+
+F.Intrinsic.String.Build("Project: {0}{1}{1}Subroutine: {2}{1}Error Occurred {3} with description {4}{1}{1}GAB Version: {5}", V.Caller.ScriptFile, V.Ambient.Newline, V.Local.sSubroutine, V.Local.iError, V.Local.sErrorDescription, V.Ambient.GABVersion, V.Local.sError)
+
+F.Intrinsic.Variable.ArgExists("UNATTENDED", V.Local.bExists)
+F.Intrinsic.Control.If(V.Local.bExists)
+	F.Intrinsic.Control.If(V.Args.UNATTENDED)
+		F.Intrinsic.Control.CallSub(UnattendedErrorMessage, "MESSAGE", V.Local.sError, "PROJECT", V.Args.PROJECT, "PROJECTTITLE", V.Args.PROJECTTITLE)
+	F.Intrinsic.Control.Else
+		F.Intrinsic.UI.Msgbox(V.Local.sError)
+	F.Intrinsic.Control.EndIf
+F.Intrinsic.Control.Else
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+F.Intrinsic.Control.EndIf
+
+F.Intrinsic.Variable.ArgExists("Callback", V.Local.bExists)
+F.Intrinsic.Control.If(V.Local.bExists)
+	V.Local.sCallback.Set(V.Args.Callback.Trim)
+	F.Intrinsic.Control.CallSub(V.Local.sCallback)
+F.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.End
+
+F.Intrinsic.Control.Catch
+	F.Intrinsic.String.Build("Project: {0}{1}{1}Subroutine: {2}{1}Error Occurred {3} with description {4}{1}{1}GAB Version: {5}",V.Caller.ScriptFile,V.Ambient.Newline,V.Ambient.CurrentSubroutine,V.Ambient.ErrorNumber,V.Ambient.ErrorDescription,V.Ambient.GABVersion,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	F.Intrinsic.Control.End
+
+F.Intrinsic.Control.EndTry
+Program.Sub.ErrorMessage.End
+
+Program.Sub.Comments.Start
+${$5$}$3.0.0.0$}$1
+${$6$}$acollins$}$20210123121324680$}$h98hERc2yV72q0GaUGlwSaoK/aefTdVkB5SGxLdVwE+1sdm90n2a0fn/auyHdhGA8UBoUpXmRDlcnO/iuMeTrQ==
+Program.Sub.Comments.End
